@@ -31,3 +31,10 @@ paths:
   styles_dir: styles
   skills_dir: skills
   output_dir: output
+
+# MCP server — exposes OpenMontage to external agents (any language) over the
+# Model Context Protocol. See mcp_server/README.md. transport: stdio | sse | streamable-http.
+mcp:
+  transport: stdio
+  host: 127.0.0.1
+  port: 8765

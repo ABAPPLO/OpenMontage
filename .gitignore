@@ -55,6 +55,10 @@ pexels_video_*.mp4
 # Scratch/debug scripts
 scratch/
 
+# MCP server logs (mcp_server stderr/debug output)
+mcp_server.log
+mcp_server/*.log
+
 # Internal docs (strategy, handoffs, playbooks — not shipped)
 internal/
 

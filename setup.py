@@ -13,5 +13,6 @@ setup(
         "python-dotenv>=1.0",
         "Pillow>=10.0",
         "requests>=2.31",
+        "mcp>=1.0",
     ],
 )

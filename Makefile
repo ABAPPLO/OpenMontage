@@ -6,7 +6,7 @@ PIP = $(RUN_PYTHON) -m pip
 
 .DEFAULT_GOAL := setup
 
-.PHONY: setup install install-dev install-gpu test test-contracts lint clean preflight demo demo-list hyperframes-doctor hyperframes-warm venv ensure-venv
+.PHONY: setup install install-dev install-gpu test test-contracts lint clean preflight demo demo-list hyperframes-doctor hyperframes-warm venv ensure-venv mcp mcp-install
 
 # ---- Virtual environment ----
 
@@ -99,6 +99,18 @@ test-contracts: ensure-venv
 
 preflight: ensure-venv
 	$(RUN_PYTHON) -c "from tools.tool_registry import registry; import json; registry.discover(); print(json.dumps(registry.provider_menu(), indent=2))"
+
+# ---- MCP server (external-agent access) ----
+
+mcp-install: ensure-venv
+	@echo "==> Installing MCP server dependencies..."
+	$(PIP) install "mcp>=1.0"
+	@echo "==> Done. Run 'make mcp' to start the server."
+
+mcp: ensure-venv
+	@echo "==> Starting OpenMontage MCP server (transport from config.yaml, default stdio)..."
+	@echo "    Override with: make mcp TRANSPORT=streamable-http PORT=8765"
+	$(RUN_PYTHON) -m mcp_server
 
 hyperframes-doctor: ensure-venv
 	@echo "==> Probing HyperFrames runtime (node/ffmpeg/npx + hyperframes doctor)..."
