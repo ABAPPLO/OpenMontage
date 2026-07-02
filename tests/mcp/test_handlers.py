@@ -167,3 +167,113 @@ def test_read_checkpoint_missing_returns_none(tmp_path):
     )
     assert out["checkpoint"] is None
     assert out["next_stage"] is not None or out["next_stage"] is None  # no crash
+
+
+# ---------------------------------------------------------------------------
+# Publish-action guard (confirm flag) — security boundary from the plan
+# ---------------------------------------------------------------------------
+
+class _FakePublishTool(BaseTool):
+    """A tool that trips the publish guard via a publishing side_effect."""
+
+    name = "fake_publisher"
+    capability = "video_post"
+    tier = ToolTier.CORE
+    capabilities = ["publish_action"]
+    side_effects = ["uploads clip to YouTube and schedules post"]
+
+    def execute(self, inputs):  # type: ignore[override]
+        return ToolResult(success=True, data={"posted": True})
+
+
+class _FakePublishTierTool(BaseTool):
+    """A tool that trips the publish guard via tier=PUBLISH."""
+
+    name = "fake_publish_tier"
+    capability = "video_post"
+    tier = ToolTier.PUBLISH
+
+    def execute(self, inputs):  # type: ignore[override]
+        return ToolResult(success=True)
+
+
+def test_publish_guard_blocks_without_confirm(isolated_registry):
+    """A publish-style tool must raise PermissionError when confirm=False."""
+    isolated_registry.register(_FakePublishTool())
+    with pytest.raises(PermissionError) as exc_info:
+        asyncio.run(H.execute_tool("fake_publisher", {}))
+    assert "publish" in str(exc_info.value).lower()
+    assert "confirm" in str(exc_info.value).lower()
+
+
+def test_publish_guard_allows_with_confirm(isolated_registry):
+    """The same publish-style tool runs fine when confirm=True."""
+    isolated_registry.register(_FakePublishTool())
+    out = asyncio.run(H.execute_tool("fake_publisher", {}, confirm=True))
+    assert out["success"] is True
+
+
+def test_publish_guard_triggers_on_tier(isolated_registry):
+    """tier=PUBLISH alone (no matching side_effect) is enough to trip the guard."""
+    isolated_registry.register(_FakePublishTierTool())
+    with pytest.raises(PermissionError):
+        asyncio.run(H.execute_tool("fake_publish_tier", {}))
+
+
+def test_publish_guard_does_not_trigger_on_normal_tool(isolated_registry):
+    """A plain tool (DummyTool) runs without confirm — no false positives."""
+    out = asyncio.run(H.execute_tool("dummy_echo", {"ok": 1}))
+    assert out["success"] is True
+
+
+def test_requires_publish_classification(isolated_registry):
+    """The classifier flags publish signals and ignores benign ones."""
+    assert H._requires_publish_confirmation(_FakePublishTool()) is not None
+    assert H._requires_publish_confirmation(_FakePublishTierTool()) is not None
+    # DummyTool (CORE, no publish side_effect) must NOT be flagged.
+    assert H._requires_publish_confirmation(DummyTool()) is None
+
+
+# ---------------------------------------------------------------------------
+# provider_menu_summary — consistency with make preflight
+# ---------------------------------------------------------------------------
+
+def test_provider_menu_summary_shape():
+    """provider_menu_summary returns the documented preflight shape.
+
+    This validates the acceptance criterion: the MCP menu matches the
+    `make preflight` rollup (same top-level keys + capability counts).
+    """
+    out = asyncio.run(H.provider_menu_summary())
+    # Same four keys the preflight menu emits.
+    assert set(out.keys()) == {
+        "composition_runtimes",
+        "capabilities",
+        "setup_offers",
+        "runtime_warnings",
+    }
+    # Composition runtimes are the three known engines.
+    assert set(out["composition_runtimes"].keys()) == {"ffmpeg", "remotion", "hyperframes"}
+    # Each capability entry carries the configured/total counts.
+    assert len(out["capabilities"]) >= 1
+    for cap in out["capabilities"]:
+        assert "configured" in cap and "total" in cap
+        assert cap["configured"] <= cap["total"]
+
+
+def test_provider_menu_summary_matches_registry():
+    """The menu's capability counts must agree with a direct registry tally."""
+    from tools.tool_registry import ToolRegistry
+
+    # provider_menu_summary uses the global registry; compare against a fresh
+    # discover on the same singleton (already discovered in-process).
+    from tools.tool_registry import registry
+    registry.ensure_discovered()
+
+    out = asyncio.run(H.provider_menu_summary())
+    # Total tools across all capabilities (excluding the selector pseudo-provider)
+    # should match the registry's non-selector tool count.
+    non_selector = [t for n, t in registry._tools.items() if t.provider != "selector"]
+    menu_total = sum(c["total"] for c in out["capabilities"])
+    assert menu_total == len(non_selector)
+

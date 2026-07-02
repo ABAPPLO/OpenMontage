@@ -55,17 +55,20 @@ async def get_tool_info(tool_name: str) -> dict:
 
 
 @mcp.tool()
-async def execute_tool(tool_name: str, inputs: dict) -> dict:
+async def execute_tool(tool_name: str, inputs: dict, confirm: bool = False) -> dict:
     """Execute an OpenMontage tool and return its ToolResult as a dict.
 
     Runs in a worker thread (long FFmpeg/Remotion jobs won't block the server).
     Returns {success, data, artifacts, error, cost_usd, duration_seconds, seed,
     model}. Check input_schema via get_tool_info first; pass a matching `inputs`.
 
+    Set confirm=True for publish-style tools (those that push content to an
+    external platform); the call raises PermissionError otherwise.
+
     Example: execute_tool("video_trimmer", {"operation":"cut","input_path":"in.mp4",
     "output_path":"out.mp4","start_seconds":0,"end_seconds":5}).
     """
-    return await handlers.execute_tool(tool_name, inputs, ctx=mcp)
+    return await handlers.execute_tool(tool_name, inputs, confirm=confirm, ctx=mcp)
 
 
 @mcp.tool()

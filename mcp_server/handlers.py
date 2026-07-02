@@ -14,13 +14,45 @@ Handler groups:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Optional
 
 from mcp.server.fastmcp import Context
 
+from tools.base_tool import BaseTool, ToolTier
 from tools.tool_registry import registry
 from mcp_server.execution import execute_tool_async, serialize_result
+
+
+# A tool is treated as "externally publishing" (irreversible, out-facing) if it
+# declares tier=publish, capability=publish, or has a side_effect that smells of
+# pushing content to an external platform. The publishers/ tool subpackage is
+# currently an empty shell, so this guard is forward-looking: when real
+# publishing tools land, the guard activates automatically without code changes.
+_PUBLISH_INTENT_RE = re.compile(
+    r"\b(publish|upload|post_?to|youtube|tiktok|instagram|twitter|x\.com|"
+    r"social|schedule|broadcast)\b",
+    re.IGNORECASE,
+)
+
+
+def _requires_publish_confirmation(tool: BaseTool) -> Optional[str]:
+    """Return a reason string if the tool is a publish-style action, else None.
+
+    A publish action is one that pushes content to an external platform —
+    irreversible and out-facing. Local file writes and generation-API calls are
+    NOT publish actions (they're reversible/controllable). We trigger on
+    tier=PUBLISH, capability=publish, or a matching side_effect.
+    """
+    if tool.tier == ToolTier.PUBLISH:
+        return f"tool tier is 'publish'"
+    if tool.capability == "publish":
+        return f"tool capability is 'publish'"
+    for effect in getattr(tool, "side_effects", []) or []:
+        if _PUBLISH_INTENT_RE.search(str(effect)):
+            return f"tool has publishing side_effect: {effect!r}"
+    return None
 
 
 def _ensure_discovered() -> None:
@@ -89,6 +121,7 @@ async def execute_tool(
     tool_name: str,
     inputs: dict[str, Any],
     *,
+    confirm: bool = False,
     ctx: Optional[Context] = None,
 ) -> dict[str, Any]:
     """Execute an OpenMontage tool and return its ToolResult as a dict.
@@ -101,17 +134,34 @@ async def execute_tool(
         tool_name: Registered tool name (e.g. "video_trimmer", "scene_detect").
         inputs: Tool input dict matching the tool's input_schema. Use
             get_tool_info to inspect the schema first.
+        confirm: Required (True) for publish-style tools — those that push
+            content to an external platform (tier=publish, capability=publish,
+            or a publishing side_effect). Mirrors AGENT_GUIDE's "announce before
+            execution": an external-facing, irreversible action must be opted
+            into explicitly rather than fired off silently.
         ctx: FastMCP Context (injected by the server; pass None when calling
             directly in tests).
 
     Returns:
         Serialized ToolResult: {success, data, artifacts, error, cost_usd,
         duration_seconds, seed, model}.
+
+    Raises:
+        PermissionError: If the tool is publish-style and ``confirm`` is False.
     """
     _ensure_discovered()
     tool = registry.get(tool_name)
     if tool is None:
         raise ValueError(f"Tool {tool_name!r} not found.")
+
+    # Guard: external-facing publish actions require explicit confirmation.
+    publish_reason = _requires_publish_confirmation(tool)
+    if publish_reason and not confirm:
+        raise PermissionError(
+            f"Tool {tool_name!r} is a publish action ({publish_reason}). "
+            f"Re-call execute_tool with confirm=True to proceed. "
+            f"This mirrors AGENT_GUIDE's 'announce before execution' rule."
+        )
 
     status = tool.get_status()
     if ctx is not None:

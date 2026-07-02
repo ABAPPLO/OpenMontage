@@ -614,6 +614,16 @@ All platform files point to the shared `AGENT_GUIDE.md` (operating guide and age
 
 > **Coming soon:** Local LLM support via **Ollama** and **LM Studio** — run the full production pipeline without any cloud LLM.
 
+### Use from another agent (MCP server)
+
+If your agent **isn't** a Python process in this repo (e.g. Claude Desktop, Cursor, a non-Python framework, or a remote service), run the built-in **MCP server**. It exposes OpenMontage's tools, pipeline/checkpoint helpers, and instruction docs over the [Model Context Protocol](https://modelcontextprotocol.io):
+
+```bash
+make mcp-install && make mcp   # stdio transport by default
+```
+
+This gives external agents 8 tools (`discover_tools`, `execute_tool`, `list_pipelines`, `get_pipeline_manifest`, `read_checkpoint`, `write_checkpoint`, …) and readable resources (`om://guide/agent-guide`, `om://pipelines/{name}`, …). The orchestration stays with your agent — the server is a thin, sandboxed wrapper over the existing registry. See **[`mcp_server/README.md`](mcp_server/README.md)** for client config and the full surface.
+
 ---
 
 ## Contributing
