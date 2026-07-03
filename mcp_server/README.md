@@ -12,21 +12,66 @@ Python process that can `import` the repo, this is the integration surface.
 
 ## Quick start
 
-```bash
-# 1. Install (adds the `mcp` SDK to your venv)
-make mcp-install
+The easiest entry point is the launcher script (`mcp-server.sh`, run from the repo
+root). It resolves a Python 3.10+ interpreter (venv first), checks the `mcp` SDK
+is installed, and dispatches to the right mode:
 
-# 2. Start the server (default transport: stdio, from config.yaml)
-make mcp
-# Override transport/port for networked access:
+```bash
+./mcp-server.sh              # stdio (default — for Claude Desktop, Cursor, etc.)
+./mcp-server.sh http 8765    # streamable-http on port 8765 (for remote/HTTP clients)
+./mcp-server.sh sse 8765     # SSE transport
+./mcp-server.sh demo         # end-to-end smoke test (generates a test video + slices it)
+./mcp-server.sh inspect      # launch the MCP Inspector web GUI (see "Testing" below)
+./mcp-server.sh install      # install the `mcp` SDK into the venv
+./mcp-server.sh --help       # full usage
+```
+
+> First run? Start with `./mcp-server.sh install` (one-time) then `./mcp-server.sh demo`
+> to confirm everything works.
+
+Prefer `make` or raw Python? Those still work:
+
+```bash
+make mcp-install             # install the mcp SDK
+make mcp                     # start (stdio default)
 make mcp TRANSPORT=streamable-http PORT=8765
-# Or run directly:
+
 python -m mcp_server --transport stdio
 python -m mcp_server --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
 Requires Python 3.10+ and a configured OpenMontage repo (`make setup` done, `.env`
 present). The server reuses the repo's `.env` for API keys — no separate config.
+
+## Testing
+
+Three ways to verify the server works, no external MCP client required:
+
+**1. Smoke test (CLI, fastest):**
+```bash
+./mcp-server.sh demo
+```
+Spawns the server over stdio, generates a 4s test video with ffmpeg, slices it
+via `execute_tool` (sync) and `submit_tool_job` (async), and prints each output
+path. Exit 0 = everything works.
+
+**2. MCP Inspector (web GUI) — best for interactive exploration:**
+```bash
+./mcp-server.sh inspect
+# or: npx @modelcontextprotocol/inspector .venv/bin/python -m mcp_server
+```
+Opens a web UI at `http://localhost:6274` (the launcher prints a URL with a
+session token). In the GUI: keep **Transport = STDIO**, the command is pre-filled,
+click **Connect**, then browse the 11 tools. Click any tool (e.g. `execute_tool`)
+and the right pane auto-builds a form from its JSON schema — fill the params and
+run. Returns show as formatted JSON. Requires Node.js for `npx`.
+
+**3. Automated test suite:**
+```bash
+python -m pytest tests/mcp/ -v
+```
+62 tests covering handlers, async jobs, sandboxed resources, real ffmpeg slicing,
+and end-to-end stdio server calls.
 
 ## Register with an MCP client
 
@@ -159,9 +204,3 @@ mcp:
 
 Overrides via CLI flags (`--transport/--host/--port`) or env (`OM_MCP_TRANSPORT`,
 `OM_MCP_HOST`, `OM_MCP_PORT`), in that priority order.
-
-## Tests
-
-```bash
-python -m pytest tests/mcp/ -v     # 59 tests: handlers, jobs, resources (incl. sandbox), execution, e2e slice
-```
