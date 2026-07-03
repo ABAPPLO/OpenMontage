@@ -14,6 +14,7 @@ Handler groups:
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -182,6 +183,95 @@ async def execute_tool(
             await ctx.info(f"{tool_name} failed: {result.error}")
 
     return serialize_result(result)
+
+
+async def submit_tool_job(
+    tool_name: str,
+    inputs: dict[str, Any],
+    *,
+    confirm: bool = False,
+    ctx: Optional[Context] = None,
+) -> dict[str, Any]:
+    """Submit a tool for async execution; return a job descriptor immediately.
+
+    Use this instead of execute_tool for long-running tools (renders, downloads)
+    so the MCP call returns at once with a job_id. Poll with get_job_status.
+
+    Args:
+        tool_name: Registered tool name.
+        inputs: Tool input dict (same shape execute_tool accepts).
+        confirm: Required True for publish-style tools (same guard as execute_tool).
+        ctx: FastMCP Context (injected by the server).
+
+    Returns:
+        Job snapshot: {job_id, tool_name, status:"pending", progress:0,
+        created_at}. Poll via get_job_status(job_id); a terminal snapshot
+        includes ``result`` (serialized ToolResult) and ``elapsed_seconds``.
+    """
+    from mcp_server.job_manager import jobs
+
+    _ensure_discovered()
+    tool = registry.get(tool_name)
+    if tool is None:
+        raise ValueError(f"Tool {tool_name!r} not found.")
+
+    # Same publish-action guard as execute_tool — async submission must not
+    # bypass the confirm requirement.
+    publish_reason = _requires_publish_confirmation(tool)
+    if publish_reason and not confirm:
+        raise PermissionError(
+            f"Tool {tool_name!r} is a publish action ({publish_reason}). "
+            f"Re-call submit_tool_job with confirm=True to proceed."
+        )
+
+    def _on_started(job) -> None:
+        if ctx is not None:
+            # report_progress is async; the hook runs from a worker thread, so
+            # schedule the notification rather than awaiting it here.
+            try:
+                asyncio.create_task(ctx.info(f"Job {job.job_id} started: {tool_name}"))
+            except Exception:
+                pass
+
+    job = await jobs.submit(tool, inputs, started_hook=_on_started)
+    if ctx is not None:
+        await ctx.info(f"Submitted {tool_name} as job {job.job_id}")
+    return job.to_dict()
+
+
+async def get_job_status(job_id: str) -> dict[str, Any]:
+    """Poll an async job submitted via submit_tool_job.
+
+    Returns the current snapshot: {job_id, tool_name, status, progress, ...}.
+    status is one of pending|running|succeeded. A succeeded snapshot includes
+    ``result`` (the serialized ToolResult — check result.success for the tool's
+    own pass/fail) and ``elapsed_seconds``. Unknown job_id raises ValueError.
+    """
+    from mcp_server.job_manager import jobs
+
+    job = jobs.get(job_id)
+    if job is None:
+        raise ValueError(
+            f"Job {job_id!r} not found. It may have aged out after a server restart, "
+            f"or the id is wrong."
+        )
+    return job.to_dict()
+
+
+async def list_jobs() -> dict[str, Any]:
+    """List all known async jobs (newest-first), with a status tally.
+
+    Useful for clients that submitted several jobs and want to see the backlog.
+    Returns {jobs: [<snapshot>...], counts: {pending, running, succeeded}}.
+    """
+    from mcp_server.job_manager import jobs, JobStatus
+
+    all_jobs = jobs.list_jobs()
+    counts = {"pending": 0, "running": 0, "succeeded": 0}
+    for j in all_jobs:
+        if j.status.value in counts:
+            counts[j.status.value] += 1
+    return {"jobs": [j.to_dict() for j in all_jobs], "counts": counts}
 
 
 # ---------------------------------------------------------------------------

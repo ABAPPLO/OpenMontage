@@ -49,7 +49,7 @@ binds to localhost by default; set `host` for remote access).
 
 ## What's exposed
 
-### 8 Tools (`tools/list` → `tools/call`)
+### 11 Tools (`tools/list` → `tools/call`)
 
 **Discovery & execution**
 
@@ -58,7 +58,15 @@ binds to localhost by default; set `host` for remote access).
 | `discover_tools` | Load all tools; return names grouped by capability |
 | `provider_menu_summary` | The "N of M configured" preflight rollup (runtimes, providers, setup offers) |
 | `get_tool_info(name)` | Full contract for one tool — **read `input_schema` before calling execute** |
-| `execute_tool(name, inputs)` | **Core** — run a tool; returns `{success, data, artifacts, error, cost_usd, duration_seconds, seed, model}` |
+| `execute_tool(name, inputs, confirm?)` | **Core** — run a tool synchronously; returns `{success, data, artifacts, error, cost_usd, duration_seconds, seed, model}`. Set `confirm=true` for publish-style tools. |
+
+**Async execution (long jobs)**
+
+| Tool | Purpose |
+|---|---|
+| `submit_tool_job(name, inputs, confirm?)` | Submit a tool for background execution; returns a job snapshot with `job_id` immediately. Use this for renders/downloads that take minutes. |
+| `get_job_status(job_id)` | Poll a job: `status` is `pending`→`running`→`succeeded`; a succeeded snapshot includes `result` (serialized ToolResult) + `elapsed_seconds`. |
+| `list_jobs()` | All jobs newest-first with a status tally `{pending, running, succeeded}`. |
 
 **Orchestration primitives (your agent drives the pipeline)**
 
@@ -107,11 +115,25 @@ A minimal flow your agent could run (clip-factory pipeline, single `cut` call):
 
 ## Long-running tools
 
-Tools like `video_compose` / Remotion can run for minutes. `execute_tool` dispatches
-to a worker thread so the server's message loop never blocks, and reports progress
-via MCP notifications. **Clients must allow generous call timeouts** (≥ 600s for
-renders). A future async job API (`execute_tool` returns a `job_id` + polling) is
-planned but not yet implemented.
+Tools like `video_compose` / Remotion can run for minutes. Two ways to handle this:
+
+- **`execute_tool`** dispatches to a worker thread so the server's message loop
+  never blocks, and reports progress via MCP notifications. **Clients must allow
+  generous call timeouts** (≥ 600s for renders).
+- **`submit_tool_job` + `get_job_status`** (preferred for long jobs): submit and
+  get a `job_id` at once, then poll until `status == "succeeded"`. No long-held
+  call. Example:
+
+  ```
+  job = submit_tool_job("video_compose", {operation:"render", ...})
+  # ...do other work...
+  while get_job_status(job.job_id).status != "succeeded": sleep(2)
+  result = get_job_status(job.job_id).result
+  ```
+
+Jobs live in server memory — a restart loses in-flight and completed jobs. This
+is the right trade for a single-process stdio server; durable persistence would
+need a backing store.
 
 ## Security
 
@@ -141,5 +163,5 @@ Overrides via CLI flags (`--transport/--host/--port`) or env (`OM_MCP_TRANSPORT`
 ## Tests
 
 ```bash
-python -m pytest tests/mcp/ -v     # 39 tests: handlers, resources (incl. sandbox), execution
+python -m pytest tests/mcp/ -v     # 59 tests: handlers, jobs, resources (incl. sandbox), execution, e2e slice
 ```

@@ -622,7 +622,7 @@ If your agent **isn't** a Python process in this repo (e.g. Claude Desktop, Curs
 make mcp-install && make mcp   # stdio transport by default
 ```
 
-This gives external agents 8 tools (`discover_tools`, `execute_tool`, `list_pipelines`, `get_pipeline_manifest`, `read_checkpoint`, `write_checkpoint`, …) and readable resources (`om://guide/agent-guide`, `om://pipelines/{name}`, …). The orchestration stays with your agent — the server is a thin, sandboxed wrapper over the existing registry. See **[`mcp_server/README.md`](mcp_server/README.md)** for client config and the full surface.
+This gives external agents 11 tools (`discover_tools`, `execute_tool`, `submit_tool_job`, `get_job_status`, `list_pipelines`, `get_pipeline_manifest`, `read_checkpoint`, `write_checkpoint`, …) and readable resources (`om://guide/agent-guide`, `om://pipelines/{name}`, …). The orchestration stays with your agent — the server is a thin, sandboxed wrapper over the existing registry. See **[`mcp_server/README.md`](mcp_server/README.md)** for client config and the full surface.
 
 ---
 

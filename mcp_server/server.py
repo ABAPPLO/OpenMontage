@@ -72,6 +72,43 @@ async def execute_tool(tool_name: str, inputs: dict, confirm: bool = False) -> d
 
 
 @mcp.tool()
+async def submit_tool_job(tool_name: str, inputs: dict, confirm: bool = False) -> dict:
+    """Submit a tool for ASYNC execution; returns a job descriptor immediately.
+
+    For long-running tools (renders, downloads, multi-minute jobs) use this
+    instead of execute_tool so the call returns at once. Returns a job snapshot:
+    {job_id, tool_name, status:"pending", progress:0, created_at}. Then poll
+    get_job_status(job_id) until status is "succeeded", at which point the
+    snapshot includes ``result`` (the serialized ToolResult) and elapsed_seconds.
+
+    Set confirm=True for publish-style tools (same guard as execute_tool).
+    """
+    return await handlers.submit_tool_job(tool_name, inputs, confirm=confirm, ctx=mcp)
+
+
+@mcp.tool()
+async def get_job_status(job_id: str) -> dict:
+    """Poll the status of an async job submitted via submit_tool_job.
+
+    Returns {job_id, tool_name, status, progress, ...}. status is one of
+    pending|running|succeeded. A succeeded snapshot includes ``result``
+    (check result.success for the tool's own pass/fail) and elapsed_seconds.
+    Jobs live in server memory; a server restart loses them.
+    """
+    return await handlers.get_job_status(job_id)
+
+
+@mcp.tool()
+async def list_jobs() -> dict:
+    """List all known async jobs (newest-first) with a status tally.
+
+    Returns {jobs: [<snapshot>...], counts: {pending, running, succeeded}}.
+    Handy when you've submitted several jobs and want to inspect the backlog.
+    """
+    return await handlers.list_jobs()
+
+
+@mcp.tool()
 async def list_pipelines() -> dict:
     """List all available pipeline manifest names (the workflows you can orchestrate).
 
