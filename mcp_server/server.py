@@ -9,7 +9,9 @@ a pure tool+library layer, per its "agent is the orchestrator" architecture.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from typing import Optional
+
+from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_server import handlers, resources
 
@@ -55,7 +57,9 @@ async def get_tool_info(tool_name: str) -> dict:
 
 
 @mcp.tool()
-async def execute_tool(tool_name: str, inputs: dict, confirm: bool = False) -> dict:
+async def execute_tool(
+    tool_name: str, inputs: dict, confirm: bool = False, ctx: Context = None
+) -> dict:
     """Execute an OpenMontage tool and return its ToolResult as a dict.
 
     Runs in a worker thread (long FFmpeg/Remotion jobs won't block the server).
@@ -68,11 +72,15 @@ async def execute_tool(tool_name: str, inputs: dict, confirm: bool = False) -> d
     Example: execute_tool("video_trimmer", {"operation":"cut","input_path":"in.mp4",
     "output_path":"out.mp4","start_seconds":0,"end_seconds":5}).
     """
-    return await handlers.execute_tool(tool_name, inputs, confirm=confirm, ctx=mcp)
+    # FastMCP injects the real per-request Context here (ctx); passing the server
+    # object directly would lack .info()/.report_progress().
+    return await handlers.execute_tool(tool_name, inputs, confirm=confirm, ctx=ctx)
 
 
 @mcp.tool()
-async def submit_tool_job(tool_name: str, inputs: dict, confirm: bool = False) -> dict:
+async def submit_tool_job(
+    tool_name: str, inputs: dict, confirm: bool = False, ctx: Context = None
+) -> dict:
     """Submit a tool for ASYNC execution; returns a job descriptor immediately.
 
     For long-running tools (renders, downloads, multi-minute jobs) use this
@@ -83,7 +91,7 @@ async def submit_tool_job(tool_name: str, inputs: dict, confirm: bool = False) -
 
     Set confirm=True for publish-style tools (same guard as execute_tool).
     """
-    return await handlers.submit_tool_job(tool_name, inputs, confirm=confirm, ctx=mcp)
+    return await handlers.submit_tool_job(tool_name, inputs, confirm=confirm, ctx=ctx)
 
 
 @mcp.tool()
