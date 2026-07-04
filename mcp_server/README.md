@@ -62,7 +62,7 @@ path. Exit 0 = everything works.
 ```
 Opens a web UI at `http://localhost:6274` (the launcher prints a URL with a
 session token). In the GUI: keep **Transport = STDIO**, the command is pre-filled,
-click **Connect**, then browse the 11 tools. Click any tool (e.g. `execute_tool`)
+click **Connect**, then browse the 14 tools. Click any tool (e.g. `execute_tool`)
 and the right pane auto-builds a form from its JSON schema — fill the params and
 run. Returns show as formatted JSON. Requires Node.js for `npx`.
 
@@ -70,7 +70,8 @@ run. Returns show as formatted JSON. Requires Node.js for `npx`.
 ```bash
 python -m pytest tests/mcp/ -v
 ```
-62 tests covering handlers, async jobs, sandboxed resources, real ffmpeg slicing,
+75 tests covering handlers, async jobs, sandboxed resources, real ffmpeg slicing,
+the three segmentation tools, and end-to-end stdio server calls.
 and end-to-end stdio server calls.
 
 ## Register with an MCP client
@@ -94,7 +95,7 @@ binds to localhost by default; set `host` for remote access).
 
 ## What's exposed
 
-### 11 Tools (`tools/list` → `tools/call`)
+### 14 Tools (`tools/list` → `tools/call`)
 
 **Discovery & execution**
 
@@ -121,6 +122,18 @@ binds to localhost by default; set `host` for remote access).
 | `get_pipeline_manifest(name)` | Stage order, per-stage skill + tools + review_focus, required_tools |
 | `read_checkpoint(project_id, stage?)` | Read a stage checkpoint + compute `next_stage` to resume |
 | `write_checkpoint(...)` | Write a validated checkpoint after completing a stage |
+
+**Video segmentation (convenience wrappers over `analysis` tools)**
+
+Strongly-typed surfaces for the three common "split & filter a video" tasks.
+Each runs off the event loop and reports progress; outputs share a unified
+segment shape so they compose (`segment_shots` → `segment_filter`).
+
+| Tool | Purpose |
+|---|---|
+| `segment_shots(input_path, ...)` | Split a video into continuous-shot segments (one per camera cut). Optionally labels shot size (`close-up`/`medium`/`wide`/...) and physically extracts each shot to mp4. |
+| `segment_by_face(input_path, ...)` | Group frames by **face identity** (InsightFace + ArcFace clustering). Returns per-identity segments + a representative face thumbnail. Requires `pip install insightface onnxruntime scikit-learn`. |
+| `segment_filter(input_path, segments, predicates, ...)` | Keep only segments matching predicates: `min/max_duration_seconds`, `has_face`, `has_speech`, `shot_size`, and/or free-text `query` (CLIP default, VLM optional). Returns `matched[]` + `rejected[]` with reasons. |
 
 ### Resources (`resources/list` → `resources/read`)
 

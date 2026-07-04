@@ -45,8 +45,9 @@ async def _call_server(tool_name: str, arguments: dict) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_server_lists_11_tools():
-    """The spawned server must advertise all 11 tools (incl. async job tools)."""
+async def test_server_lists_all_tools():
+    """The spawned server must advertise all expected tools (discovery,
+    execution, async job, orchestration, and the 3 video-segmentation tools)."""
     from mcp import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
@@ -59,12 +60,13 @@ async def test_server_lists_11_tools():
             await session.initialize()
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
-    assert len(names) == 11
+    assert len(names) == 14
     for expected in (
         "discover_tools", "provider_menu_summary", "get_tool_info", "execute_tool",
         "submit_tool_job", "get_job_status", "list_jobs",
         "list_pipelines", "get_pipeline_manifest",
         "read_checkpoint", "write_checkpoint",
+        "segment_shots", "segment_by_face", "segment_filter",
     ):
         assert expected in names, f"missing tool {expected}"
 

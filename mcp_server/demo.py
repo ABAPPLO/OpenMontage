@@ -66,7 +66,7 @@ async def main() -> int:
             print(f"  server advertises {len(tools.tools)} tools:")
             for t in tools.tools:
                 print(f"     - {t.name}")
-            assert len(tools.tools) == 11
+            assert len(tools.tools) == 14
 
             _section("2. preflight — provider menu summary")
             res = await session.call_tool("provider_menu_summary", {})

@@ -275,6 +275,211 @@ async def list_jobs() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Video segmentation convenience tools
+# ---------------------------------------------------------------------------
+# These wrap the segment_shots / segment_by_face / segment_filter BaseTools
+# (capability="analysis") with strongly-typed MCP surfaces so external agents
+# don't have to remember the generic execute_tool(name, inputs) dance. Each runs
+# the underlying tool off the event loop via execute_tool_async and reports
+# progress through the MCP Context. All three return a serialized ToolResult.
+
+_SEGMENT_DEFAULTS = {
+    "segment_shots": {
+        "method": "content",
+        "min_scene_length_seconds": 1.0,
+        "enrich": True,
+        "extract_clips": False,
+        "max_clips": 50,
+        "clips_subdir": "clips",
+    },
+    "segment_by_face": {
+        "sample_fps": 2.0,
+        "cluster_threshold": 0.42,
+        "min_face_size": 48,
+        "max_gap_seconds": 2.0,
+        "min_track_seconds": 1.0,
+        "extract_clips": False,
+        "clips_subdir": "clips",
+        "max_identities": 50,
+        "device": "auto",
+    },
+    "segment_filter": {
+        "query_backend": "clip",
+        "query_threshold": 0.25,
+        "extract_clips": False,
+        "clips_subdir": "clips",
+    },
+}
+
+
+def _segment_tool_inputs(tool_name: str, **kwargs: Any) -> dict[str, Any]:
+    """Build an inputs dict for a segment tool, dropping Nones and layering the
+    caller's explicit kwargs over the documented defaults."""
+    inputs = dict(_SEGMENT_DEFAULTS.get(tool_name, {}))
+    for k, v in kwargs.items():
+        if v is None:
+            continue
+        inputs[k] = v
+    return inputs
+
+
+async def _run_segment_tool(
+    tool_name: str,
+    inputs: dict[str, Any],
+    ctx: Optional[Context],
+) -> dict[str, Any]:
+    """Resolve, status-check, and run a segment tool off the event loop."""
+    _ensure_discovered()
+    tool = registry.get(tool_name)
+    if tool is None:
+        raise ValueError(f"Tool {tool_name!r} not found in registry.")
+
+    status = tool.get_status()
+    if ctx is not None:
+        await ctx.info(f"Running {tool_name} (status={status.value})")
+
+    result = await execute_tool_async(tool, inputs)
+
+    if ctx is not None:
+        await ctx.report_progress(1, 1)
+        if result.success:
+            await ctx.info(
+                f"{tool_name} succeeded in {result.duration_seconds}s"
+            )
+        else:
+            await ctx.info(f"{tool_name} failed: {result.error}")
+
+    return serialize_result(result)
+
+
+async def segment_shots(
+    input_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    method: Optional[str] = None,
+    threshold: Optional[float] = None,
+    min_scene_length_seconds: Optional[float] = None,
+    enrich: Optional[bool] = None,
+    extract_clips: Optional[bool] = None,
+    max_clips: Optional[int] = None,
+    clips_subdir: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> dict[str, Any]:
+    """Split a video into continuous-shot segments (one segment per camera cut).
+
+    Wraps the segment_shots tool: detects shot boundaries (via scene_detect),
+    returns each shot as {id, start_seconds, end_seconds, duration_seconds,
+    shot_size?, description?, clip_path?}, and optionally labels shot sizes
+    (enrich=true, default) and physically extracts each shot to mp4
+    (extract_clips=true). Output is the unified {shots:[...]} shape that
+    composes with segment_by_face and segment_filter.
+
+    Returns a serialized ToolResult: {success, data:{shot_count, shots, ...},
+    artifacts, error, duration_seconds}. Check ``success`` and ``data.method``.
+    """
+    inputs = _segment_tool_inputs(
+        "segment_shots",
+        input_path=input_path,
+        output_dir=output_dir,
+        method=method,
+        threshold=threshold,
+        min_scene_length_seconds=min_scene_length_seconds,
+        enrich=enrich,
+        extract_clips=extract_clips,
+        max_clips=max_clips,
+        clips_subdir=clips_subdir,
+    )
+    return await _run_segment_tool("segment_shots", inputs, ctx)
+
+
+async def segment_by_face(
+    input_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    sample_fps: Optional[float] = None,
+    cluster_threshold: Optional[float] = None,
+    min_face_size: Optional[int] = None,
+    max_gap_seconds: Optional[float] = None,
+    min_track_seconds: Optional[float] = None,
+    extract_clips: Optional[bool] = None,
+    clips_subdir: Optional[str] = None,
+    max_identities: Optional[int] = None,
+    device: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> dict[str, Any]:
+    """Group a video's frames by face identity — split by WHO appears.
+
+    Wraps the segment_by_face tool: samples frames, embeds every face with
+    InsightFace (ArcFace), clusters embeddings into identities, and returns per-
+    identity segments + a representative face thumbnail. This is true face
+    *recognition* (not just detection); for single-frame detection use face_tracker
+    directly. Requires: pip install insightface onnxruntime scikit-learn.
+
+    ``device`` selects the compute backend: 'cpu' (force, works everywhere),
+    'gpu' (force, needs onnxruntime-gpu+CUDA), or 'auto' (default — GPU if
+    available else CPU). Inference is always local; no third-party API is called.
+
+    Returns a serialized ToolResult: {success, data:{identities_count, identities:
+    [{id, label, total_duration_seconds, segments, representative_face_path}]},
+    artifacts, error, duration_seconds}.
+    """
+    inputs = _segment_tool_inputs(
+        "segment_by_face",
+        input_path=input_path,
+        output_dir=output_dir,
+        sample_fps=sample_fps,
+        cluster_threshold=cluster_threshold,
+        min_face_size=min_face_size,
+        max_gap_seconds=max_gap_seconds,
+        min_track_seconds=min_track_seconds,
+        extract_clips=extract_clips,
+        clips_subdir=clips_subdir,
+        max_identities=max_identities,
+        device=device,
+    )
+    return await _run_segment_tool("segment_by_face", inputs, ctx)
+
+
+async def segment_filter(
+    input_path: str,
+    segments: list[dict[str, Any]],
+    predicates: dict[str, Any],
+    output_dir: Optional[str] = None,
+    *,
+    query_backend: Optional[str] = None,
+    query_threshold: Optional[float] = None,
+    extract_clips: Optional[bool] = None,
+    clips_subdir: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> dict[str, Any]:
+    """Filter a list of video segments by per-segment predicates (AND logic).
+
+    Wraps the segment_filter tool. ``segments`` is a list of {start_seconds,
+    end_seconds, [shot_size]} (typically the output of segment_shots or
+    segment_by_face). ``predicates`` may include any subset of:
+    min_duration_seconds, max_duration_seconds, has_face (bool), has_speech
+    (bool), shot_size (str|[str]), query (free-text, supports '| ' for OR).
+    Predicates evaluate cheap-first; a segment failing any is dropped with a
+    reason in rejected[]. ``query_backend`` is 'clip' (default, light) or 'vlm'.
+
+    Returns a serialized ToolResult: {success, data:{matched_count, rejected_count,
+    matched:[...], rejected:[{segment, failed_predicates, reasons}]}, ...}.
+    """
+    inputs = _segment_tool_inputs(
+        "segment_filter",
+        input_path=input_path,
+        segments=segments,
+        predicates=predicates,
+        output_dir=output_dir,
+        query_backend=query_backend,
+        query_threshold=query_threshold,
+        extract_clips=extract_clips,
+        clips_subdir=clips_subdir,
+    )
+    return await _run_segment_tool("segment_filter", inputs, ctx)
+
+
+# ---------------------------------------------------------------------------
 # Orchestration primitives (the client agent does the actual orchestration)
 # ---------------------------------------------------------------------------
 

@@ -1,10 +1,12 @@
 """FastMCP server wiring — registers handlers as MCP tools and resources.
 
 Run with ``python -m mcp_server`` (see __main__.py for transport/host/port).
-The server exposes 8 tools (discovery, execution, orchestration primitives) and
-a set of resources (instruction docs). External agents connect as MCP clients,
-discover these, and orchestrate video production themselves — OpenMontage stays
-a pure tool+library layer, per its "agent is the orchestrator" architecture.
+The server exposes 14 tools — discovery & execution, an async job API,
+orchestration primitives, and three video-segmentation convenience tools
+(segment_shots, segment_by_face, segment_filter) — plus a set of resources
+(instruction docs). External agents connect as MCP clients, discover these,
+and orchestrate video production themselves — OpenMontage stays a pure
+tool+library layer, per its "agent is the orchestrator" architecture.
 """
 
 from __future__ import annotations
@@ -114,6 +116,137 @@ async def list_jobs() -> dict:
     Handy when you've submitted several jobs and want to inspect the backlog.
     """
     return await handlers.list_jobs()
+
+
+# ---------------------------------------------------------------------------
+# Video segmentation convenience tools
+# ---------------------------------------------------------------------------
+# Strongly-typed wrappers around the segment_shots / segment_by_face /
+# segment_filter analysis tools. Each runs off the event loop and reports
+# progress via ctx. Outputs share a unified {segments/shots/identities} shape so
+# they compose: shots -> filter, or stand alone. Same Tools can also be invoked
+# through the generic execute_tool if you prefer.
+
+@mcp.tool()
+async def segment_shots(
+    input_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    method: Optional[str] = None,
+    threshold: Optional[float] = None,
+    min_scene_length_seconds: Optional[float] = None,
+    enrich: Optional[bool] = None,
+    extract_clips: Optional[bool] = None,
+    max_clips: Optional[int] = None,
+    clips_subdir: Optional[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """Split a video into continuous-shot segments (one segment per camera cut).
+
+    Detects shot boundaries and returns each shot as an object: {id,
+    start_seconds, end_seconds, duration_seconds, shot_size?, description?,
+    clip_path?}. With enrich=true (default) it also labels each shot's framing
+    (close-up/medium/wide/establishing). With extract_clips=true it physically
+    cuts each shot to its own mp4. Returns the unified {shots:[...]} shape.
+
+    Pass the result's shots into segment_filter to keep only certain shots.
+    """
+    return await handlers.segment_shots(
+        input_path, output_dir,
+        method=method,
+        threshold=threshold,
+        min_scene_length_seconds=min_scene_length_seconds,
+        enrich=enrich,
+        extract_clips=extract_clips,
+        max_clips=max_clips,
+        clips_subdir=clips_subdir,
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def segment_by_face(
+    input_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    sample_fps: Optional[float] = None,
+    cluster_threshold: Optional[float] = None,
+    min_face_size: Optional[int] = None,
+    max_gap_seconds: Optional[float] = None,
+    min_track_seconds: Optional[float] = None,
+    extract_clips: Optional[bool] = None,
+    clips_subdir: Optional[str] = None,
+    max_identities: Optional[int] = None,
+    device: Optional[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """Group a video by face identity — split by WHO appears, not where.
+
+    Samples frames, embeds every face with InsightFace (ArcFace), clusters the
+    embeddings into identities, and returns per-identity segments plus a
+    representative face thumbnail per identity. This is true face recognition
+    across the whole video (not per-frame detection). Requires:
+    pip install insightface onnxruntime scikit-learn (first run downloads the
+    ~250MB buffalo_l model).
+
+    ``device`` selects compute: 'cpu' (force), 'gpu' (needs onnxruntime-gpu),
+    or 'auto' (default — GPU if available else CPU). Always runs locally,
+    no third-party API is called.
+
+    Returns {identities_count, identities:[{id, label, total_duration_seconds,
+    segments:[{start_seconds,end_seconds,...}], representative_face_path}]}.
+    """
+    return await handlers.segment_by_face(
+        input_path, output_dir,
+        sample_fps=sample_fps,
+        cluster_threshold=cluster_threshold,
+        min_face_size=min_face_size,
+        max_gap_seconds=max_gap_seconds,
+        min_track_seconds=min_track_seconds,
+        extract_clips=extract_clips,
+        clips_subdir=clips_subdir,
+        max_identities=max_identities,
+        device=device,
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def segment_filter(
+    input_path: str,
+    segments: list[dict],
+    predicates: dict,
+    output_dir: Optional[str] = None,
+    *,
+    query_backend: Optional[str] = None,
+    query_threshold: Optional[float] = None,
+    extract_clips: Optional[bool] = None,
+    clips_subdir: Optional[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """Filter a list of video segments by per-segment predicates (AND logic).
+
+    ``segments`` is a list of {start_seconds, end_seconds, [shot_size]} —
+    typically the output of segment_shots or segment_by_face. ``predicates`` may
+    include any subset of:
+      min_duration_seconds, max_duration_seconds (numbers),
+      has_face, has_speech (booleans),
+      shot_size (a label or list of labels),
+      query (free text; use ' | ' between terms for OR).
+    Cheap predicates run first; a segment failing any predicate is dropped with
+    a recorded reason. query_backend is 'clip' (default, light) or 'vlm'.
+
+    Returns {matched_count, rejected_count, matched:[...], rejected:[{segment,
+    failed_predicates, reasons}]}. Pass segment_shots' shots[] as the input.
+    """
+    return await handlers.segment_filter(
+        input_path, segments, predicates, output_dir,
+        query_backend=query_backend,
+        query_threshold=query_threshold,
+        extract_clips=extract_clips,
+        clips_subdir=clips_subdir,
+        ctx=ctx,
+    )
 
 
 @mcp.tool()
