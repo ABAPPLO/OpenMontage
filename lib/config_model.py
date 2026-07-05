@@ -62,6 +62,18 @@ class PathsConfig(BaseModel):
     output_dir: str = "output"
 
 
+class MCPConfig(BaseModel):
+    """Configuration for the MCP server (external-agent access surface).
+
+    transport: stdio (default, for local MCP clients) | sse | streamable-http.
+    host/port only apply to the networked transports.
+    """
+
+    transport: str = "stdio"
+    host: str = "127.0.0.1"
+    port: int = 8765
+
+
 class OpenMontageConfig(BaseModel):
     """Top-level runtime configuration."""
 
@@ -70,6 +82,7 @@ class OpenMontageConfig(BaseModel):
     checkpoint: CheckpointConfig = Field(default_factory=CheckpointConfig)
     output: OutputConfig = Field(default_factory=OutputConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
     @classmethod
     def load(cls, config_path: Optional[Path] = None) -> "OpenMontageConfig":

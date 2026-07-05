@@ -1,0 +1,384 @@
+"""FastMCP server wiring — registers handlers as MCP tools and resources.
+
+Run with ``python -m mcp_server`` (see __main__.py for transport/host/port).
+The server exposes 14 tools — discovery & execution, an async job API,
+orchestration primitives, and three video-segmentation convenience tools
+(segment_shots, segment_by_face, segment_filter) — plus a set of resources
+(instruction docs). External agents connect as MCP clients, discover these,
+and orchestrate video production themselves — OpenMontage stays a pure
+tool+library layer, per its "agent is the orchestrator" architecture.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from mcp.server.fastmcp import Context, FastMCP
+
+from mcp_server import handlers, resources
+
+mcp = FastMCP("openmontage")
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+# FastMCP derives the tool's JSON schema from the function signature + type
+# hints, and the description from the docstring. Keep both accurate.
+
+@mcp.tool()
+async def discover_tools() -> dict:
+    """Discover and load all OpenMontage tools; return names grouped by capability.
+
+    Call this (or provider_menu_summary) first so the tool registry is populated.
+    Returns {capabilities: {<cap>: [<tool_name>...]}, total: <N>}.
+    """
+    return await handlers.discover_tools()
+
+
+@mcp.tool()
+async def provider_menu_summary() -> dict:
+    """Return the compact capability menu (the 'N of M configured' preflight rollup).
+
+    Use this to know which providers are actually configured on this machine
+    before planning production. Mirrors `make preflight`. Shape:
+    {composition_runtimes, capabilities[], setup_offers[], runtime_warnings[]}.
+    """
+    return await handlers.provider_menu_summary()
+
+
+@mcp.tool()
+async def get_tool_info(tool_name: str) -> dict:
+    """Return the full self-describing contract for one tool.
+
+    Includes input_schema, output_schema, dependencies, install_instructions,
+    best_for, agent_skills, runtime, status. Inspect input_schema to learn the
+    parameters before calling execute_tool.
+    """
+    return await handlers.get_tool_info(tool_name)
+
+
+@mcp.tool()
+async def execute_tool(
+    tool_name: str, inputs: dict, confirm: bool = False, ctx: Context = None
+) -> dict:
+    """Execute an OpenMontage tool and return its ToolResult as a dict.
+
+    Runs in a worker thread (long FFmpeg/Remotion jobs won't block the server).
+    Returns {success, data, artifacts, error, cost_usd, duration_seconds, seed,
+    model}. Check input_schema via get_tool_info first; pass a matching `inputs`.
+
+    Set confirm=True for publish-style tools (those that push content to an
+    external platform); the call raises PermissionError otherwise.
+
+    Example: execute_tool("video_trimmer", {"operation":"cut","input_path":"in.mp4",
+    "output_path":"out.mp4","start_seconds":0,"end_seconds":5}).
+    """
+    # FastMCP injects the real per-request Context here (ctx); passing the server
+    # object directly would lack .info()/.report_progress().
+    return await handlers.execute_tool(tool_name, inputs, confirm=confirm, ctx=ctx)
+
+
+@mcp.tool()
+async def submit_tool_job(
+    tool_name: str, inputs: dict, confirm: bool = False, ctx: Context = None
+) -> dict:
+    """Submit a tool for ASYNC execution; returns a job descriptor immediately.
+
+    For long-running tools (renders, downloads, multi-minute jobs) use this
+    instead of execute_tool so the call returns at once. Returns a job snapshot:
+    {job_id, tool_name, status:"pending", progress:0, created_at}. Then poll
+    get_job_status(job_id) until status is "succeeded", at which point the
+    snapshot includes ``result`` (the serialized ToolResult) and elapsed_seconds.
+
+    Set confirm=True for publish-style tools (same guard as execute_tool).
+    """
+    return await handlers.submit_tool_job(tool_name, inputs, confirm=confirm, ctx=ctx)
+
+
+@mcp.tool()
+async def get_job_status(job_id: str) -> dict:
+    """Poll the status of an async job submitted via submit_tool_job.
+
+    Returns {job_id, tool_name, status, progress, ...}. status is one of
+    pending|running|succeeded. A succeeded snapshot includes ``result``
+    (check result.success for the tool's own pass/fail) and elapsed_seconds.
+    Jobs live in server memory; a server restart loses them.
+    """
+    return await handlers.get_job_status(job_id)
+
+
+@mcp.tool()
+async def list_jobs() -> dict:
+    """List all known async jobs (newest-first) with a status tally.
+
+    Returns {jobs: [<snapshot>...], counts: {pending, running, succeeded}}.
+    Handy when you've submitted several jobs and want to inspect the backlog.
+    """
+    return await handlers.list_jobs()
+
+
+# ---------------------------------------------------------------------------
+# Video segmentation convenience tools
+# ---------------------------------------------------------------------------
+# Strongly-typed wrappers around the segment_shots / segment_by_face /
+# segment_filter analysis tools. Each runs off the event loop and reports
+# progress via ctx. Outputs share a unified {segments/shots/identities} shape so
+# they compose: shots -> filter, or stand alone. Same Tools can also be invoked
+# through the generic execute_tool if you prefer.
+
+@mcp.tool()
+async def segment_shots(
+    input_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    method: Optional[str] = None,
+    threshold: Optional[float] = None,
+    min_scene_length_seconds: Optional[float] = None,
+    enrich: Optional[bool] = None,
+    extract_clips: Optional[bool] = None,
+    max_clips: Optional[int] = None,
+    clips_subdir: Optional[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """Split a video into continuous-shot segments (one segment per camera cut).
+
+    Detects shot boundaries and returns each shot as an object: {id,
+    start_seconds, end_seconds, duration_seconds, shot_size?, description?,
+    clip_path?}. With enrich=true (default) it also labels each shot's framing
+    (close-up/medium/wide/establishing). With extract_clips=true it physically
+    cuts each shot to its own mp4. Returns the unified {shots:[...]} shape.
+
+    Pass the result's shots into segment_filter to keep only certain shots.
+    """
+    return await handlers.segment_shots(
+        input_path, output_dir,
+        method=method,
+        threshold=threshold,
+        min_scene_length_seconds=min_scene_length_seconds,
+        enrich=enrich,
+        extract_clips=extract_clips,
+        max_clips=max_clips,
+        clips_subdir=clips_subdir,
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def segment_by_face(
+    input_path: str,
+    output_dir: Optional[str] = None,
+    *,
+    sample_fps: Optional[float] = None,
+    cluster_threshold: Optional[float] = None,
+    min_face_size: Optional[int] = None,
+    max_gap_seconds: Optional[float] = None,
+    min_track_seconds: Optional[float] = None,
+    extract_clips: Optional[bool] = None,
+    clips_subdir: Optional[str] = None,
+    max_identities: Optional[int] = None,
+    device: Optional[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """Group a video by face identity — split by WHO appears, not where.
+
+    Samples frames, embeds every face with InsightFace (ArcFace), clusters the
+    embeddings into identities, and returns per-identity segments plus a
+    representative face thumbnail per identity. This is true face recognition
+    across the whole video (not per-frame detection). Requires:
+    pip install insightface onnxruntime scikit-learn (first run downloads the
+    ~250MB buffalo_l model).
+
+    ``device`` selects compute: 'cpu' (force), 'gpu' (needs onnxruntime-gpu),
+    or 'auto' (default — GPU if available else CPU). Always runs locally,
+    no third-party API is called.
+
+    Returns {identities_count, identities:[{id, label, total_duration_seconds,
+    segments:[{start_seconds,end_seconds,...}], representative_face_path}]}.
+    """
+    return await handlers.segment_by_face(
+        input_path, output_dir,
+        sample_fps=sample_fps,
+        cluster_threshold=cluster_threshold,
+        min_face_size=min_face_size,
+        max_gap_seconds=max_gap_seconds,
+        min_track_seconds=min_track_seconds,
+        extract_clips=extract_clips,
+        clips_subdir=clips_subdir,
+        max_identities=max_identities,
+        device=device,
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def segment_filter(
+    input_path: str,
+    segments: list[dict],
+    predicates: dict,
+    output_dir: Optional[str] = None,
+    *,
+    query_backend: Optional[str] = None,
+    query_threshold: Optional[float] = None,
+    extract_clips: Optional[bool] = None,
+    clips_subdir: Optional[str] = None,
+    ctx: Context = None,
+) -> dict:
+    """Filter a list of video segments by per-segment predicates (AND logic).
+
+    ``segments`` is a list of {start_seconds, end_seconds, [shot_size]} —
+    typically the output of segment_shots or segment_by_face. ``predicates`` may
+    include any subset of:
+      min_duration_seconds, max_duration_seconds (numbers),
+      has_face, has_speech (booleans),
+      shot_size (a label or list of labels),
+      query (free text; use ' | ' between terms for OR).
+    Cheap predicates run first; a segment failing any predicate is dropped with
+    a recorded reason. query_backend is 'clip' (default, light) or 'vlm'.
+
+    Returns {matched_count, rejected_count, matched:[...], rejected:[{segment,
+    failed_predicates, reasons}]}. Pass segment_shots' shots[] as the input.
+    """
+    return await handlers.segment_filter(
+        input_path, segments, predicates, output_dir,
+        query_backend=query_backend,
+        query_threshold=query_threshold,
+        extract_clips=extract_clips,
+        clips_subdir=clips_subdir,
+        ctx=ctx,
+    )
+
+
+@mcp.tool()
+async def list_pipelines() -> dict:
+    """List all available pipeline manifest names (the workflows you can orchestrate).
+
+    Returns {pipelines: [<name>...], total: N}. Pass any name to
+    get_pipeline_manifest for the stage/tools breakdown.
+    """
+    return await handlers.list_pipelines()
+
+
+@mcp.tool()
+async def get_pipeline_manifest(pipeline_name: str) -> dict:
+    """Return a pipeline's manifest + derived stage/tools/review breakdown.
+
+    Gives stage_order, per-stage skill path + tools_available + review_focus +
+    human_approval_default, and the union of required_tools. Use this to drive
+    stage-by-stage orchestration (the agent decides ordering and checkpoints).
+    """
+    return await handlers.get_pipeline_manifest(pipeline_name)
+
+
+@mcp.tool()
+async def read_checkpoint(
+    project_id: str,
+    stage: str | None = None,
+    pipeline_dir: str = "pipeline",
+    pipeline_type: str | None = None,
+) -> dict:
+    """Read a checkpoint (or the latest) and compute the next stage to resume.
+
+    If `stage` is omitted, reads the latest checkpoint. Returns the checkpoint,
+    latest_stage, next_stage (where to resume), and completed_stages. Use this
+    between stages to decide what to run next.
+    """
+    return await handlers.read_checkpoint(
+        project_id, stage, pipeline_dir=pipeline_dir, pipeline_type=pipeline_type
+    )
+
+
+@mcp.tool()
+async def write_checkpoint(
+    project_id: str,
+    stage: str,
+    status: str,
+    artifacts: dict,
+    pipeline_dir: str = "pipeline",
+    pipeline_type: str | None = None,
+    style_playbook: str | None = None,
+    checkpoint_policy: str = "guided",
+    human_approval_required: bool = False,
+    human_approved: bool = False,
+    review: dict | None = None,
+    cost_snapshot: dict | None = None,
+    metadata: dict | None = None,
+) -> dict:
+    """Write a validated checkpoint for a stage (call after completing a stage).
+
+    Validates the checkpoint + canonical artifact against project JSON schemas
+    (raises on invalid artifacts). Returns {path, stage, status, next_stage}.
+    `status` is one of: completed, awaiting_human, in_progress, failed.
+    """
+    return await handlers.write_checkpoint(
+        project_id, stage, status, artifacts,
+        pipeline_dir=pipeline_dir,
+        pipeline_type=pipeline_type,
+        style_playbook=style_playbook,
+        checkpoint_policy=checkpoint_policy,
+        human_approval_required=human_approval_required,
+        human_approved=human_approved,
+        review=review,
+        cost_snapshot=cost_snapshot,
+        metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resources — static guide docs (discoverable via resources/list)
+# ---------------------------------------------------------------------------
+
+@mcp.resource("om://guide/agent-guide")
+def _guide_agent_guide() -> str:
+    """AGENT_GUIDE.md — the central agent operating contract. Read first."""
+    text, _ = resources.read("om://guide/agent-guide")
+    return text
+
+
+@mcp.resource("om://guide/project-context")
+def _guide_project_context() -> str:
+    """PROJECT_CONTEXT.md — architecture, key files, conventions."""
+    text, _ = resources.read("om://guide/project-context")
+    return text
+
+
+@mcp.resource("om://guide/agents")
+def _guide_agents() -> str:
+    """AGENTS.md — the mandatory entry pointer."""
+    text, _ = resources.read("om://guide/agents")
+    return text
+
+
+@mcp.resource("om://guide/readme")
+def _guide_readme() -> str:
+    """README.md — project overview and quick start."""
+    text, _ = resources.read("om://guide/readme")
+    return text
+
+
+@mcp.resource("om://pipelines/{name}")
+def _pipeline_manifest(name: str) -> str:
+    """A pipeline manifest YAML (stage definitions, tools, review focus)."""
+    text, _ = resources.read(f"om://pipelines/{name}")
+    return text
+
+
+@mcp.resource("om://skills/{path}")
+def _skill(path: str) -> str:
+    """A Layer-2 skill doc under skills/ (stage directors, meta skills, core)."""
+    text, _ = resources.read(f"om://skills/{path}")
+    return text
+
+
+@mcp.resource("om://agent-skills/{path}")
+def _agent_skill(path: str) -> str:
+    """A Layer-3 vendor/technology skill under .agents/skills/."""
+    text, _ = resources.read(f"om://agent-skills/{path}")
+    return text
+
+
+@mcp.resource("om://styles/{name}")
+def _style(name: str) -> str:
+    """A visual style playbook YAML under styles/."""
+    text, _ = resources.read(f"om://styles/{name}")
+    return text
